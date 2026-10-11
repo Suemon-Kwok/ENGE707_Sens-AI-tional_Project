@@ -65,6 +65,7 @@ def make_decision_tree(seed):
 # =============================================================================
 # DATA MANAGEMENT / ENVIRONMENT
 # =============================================================================
+# Reads X/y once: classifies each attribute as discrete or continuous, records value ranges, shuffles the data.
 class DataManagement:
     def __init__(self, dataFeatures, dataPhenotypes, elcs):
         # About Attributes
@@ -221,6 +222,7 @@ class OfflineEnvironment:
 # =============================================================================
 # CLASSIFIER (RULE)
 # =============================================================================
+# One rule: a condition over some attributes (specifiedAttList + condition) -> a predicted class, with its fitness stats.
 class Classifier:
     def __init__(self,elcs,a=None,b=None,c=None,d=None):
         #Major Parameters
@@ -248,6 +250,7 @@ class Classifier:
             self.classifierCopy(a, b)
 
     # Classifier Construction Methods
+    # Covering: build a brand-new rule that matches the current training instance (each attribute kept with probability p_spec).
     def classifierCovering(self, elcs, setSize, exploreIter, state, phenotype):
         # Initialize new classifier parameters----------
         self.timeStampGA = exploreIter
@@ -310,6 +313,7 @@ class Classifier:
             self.condition.append(condList)
 
     # Matching
+    # True if every specified attribute of this rule matches the instance (continuous: inside [low, high]; discrete: equal).
     def match(self, state, elcs):
         for i in range(len(self.condition)):
             specifiedIndex = self.specifiedAttList[i]
@@ -382,10 +386,12 @@ class Classifier:
         else:
             self.aveMatchSetSize = self.aveMatchSetSize + elcs.beta * (matchSetSize - self.aveMatchSetSize)
 
+    # accuracy = correct matches / total matches; updateFitness below turns it into fitness = accuracy ** nu.
     def updateAccuracy(self):
         """ Update the accuracy tracker """
         self.accuracy = self.correctCount / float(self.matchCount)
 
+    # Fitness of the rule (discrete class: accuracy ** nu). This is the function to breakpoint when debugging fitness.
     def updateFitness(self, elcs):
         """ Update the fitness parameter. """
         if elcs.env.formatData.discretePhenotype or (
@@ -398,6 +404,7 @@ class Classifier:
                 self.fitness = math.fabs(pow(self.accuracy, elcs.nu) - (
                             self.phenotype[1] - self.phenotype[0]) / elcs.env.formatData.phenotypeRange)
 
+    # Subsumption helpers: a rule can absorb a more specific one if it is experienced and accurate enough (theta_sub, acc_sub).
     def isSubsumer(self, elcs):
         if self.matchCount > elcs.theta_sub and self.accuracy > elcs.acc_sub:
             return True
@@ -420,6 +427,7 @@ class Classifier:
                     return False
         return True
 
+    # GA crossover: swap attribute conditions between two parent rules to create offspring.
     def uniformCrossover(self, elcs, cl):
         if elcs.env.formatData.discretePhenotype or random.random() < 0.5:
             p_self_specifiedAttList = copy.deepcopy(self.specifiedAttList)
@@ -528,6 +536,7 @@ class Classifier:
 
         return changed
 
+    # GA mutation: randomly add, remove or shift attribute conditions (probability mu) and sometimes change the class.
     def Mutation(self, elcs, state, phenotype):
         changed = False
         # Mutate Condition
@@ -647,6 +656,7 @@ class Classifier:
                     return True
                 return False
 
+    # Deletion vote: low-fitness, large-niche rules are more likely to be removed when the population exceeds N.
     def getDelProp(self, elcs, meanFitness):
         """  Returns the vote for deletion of the classifier. """
         if self.fitness / self.numerosity >= elcs.delta * meanFitness or self.matchCount < elcs.theta_del:
@@ -661,6 +671,7 @@ class Classifier:
 # =============================================================================
 # PREDICTION
 # =============================================================================
+# Turns the matching rules into a class: each class votes with sum(fitness * numerosity); ties/no match fall back to the majority class.
 class Prediction():
     def __init__(self,elcs,population):
         self.decision = None
@@ -792,6 +803,7 @@ class Prediction():
 # =============================================================================
 # CLASSIFIER SET (POPULATION)
 # =============================================================================
+# The rule population plus the per-instance match set [M] and correct set [C].
 class ClassifierSet:
     def __init__(self):
         #Major Parameters
@@ -800,6 +812,7 @@ class ClassifierSet:
         self.correctSet = []
         self.microPopSize = 0
 
+    # Form [M] (rules matching this instance); trigger covering if no matching rule has the right class.
     def makeMatchSet(self,state_phenotype,exploreIter,elcs):
         state = state_phenotype[0]
         phenotype = state_phenotype[1]
@@ -857,6 +870,7 @@ class ClassifierSet:
                 if float(phenotype) <= float(self.popSet[ref].phenotype[1]) and float(phenotype) >= float(self.popSet[ref].phenotype[0]):
                     self.correctSet.append(ref)
 
+    # After each instance: update experience, accuracy and fitness of every rule in [M].
     def updateSets(self,elcs,exploreIter):
         matchSetNumerosity = 0
         for ref in self.matchSet:
@@ -912,6 +926,7 @@ class ClassifierSet:
             if ref > deleteRef:
                 self.correctSet[j] -= 1
 
+    # Genetic algorithm on [C]: tournament-select two parents, crossover, mutate, add the offspring to the population.
     def runGA(self,elcs,exploreIter,state,phenotype):
         #GA Run Requirement
         if (exploreIter - self.getIterStampAverage()) < elcs.theta_GA:
@@ -1026,6 +1041,7 @@ class ClassifierSet:
             if len(cl.specifiedAttList) > 0:
                 self.addClassifierToPopulation(elcs, cl, False)
 
+    # Keep the population at or below N by deleting rules (chosen by deletion vote).
     def deletion(self,elcs,exploreIter):
         while (self.microPopSize > elcs.N):
             self.deleteFromPopulation(elcs)
@@ -1085,6 +1101,7 @@ class ClassifierSet:
 # =============================================================================
 # eLCS (trimmed)
 # =============================================================================
+# Scikit-learn style eLCS: fit() runs the learning loop, predict() uses the evolved rule population.
 class eLCS(BaseEstimator, ClassifierMixin):
     def __init__(self, learning_iterations=10000, N=1000, p_spec=0.5, discrete_attribute_limit=10,
                  specified_attributes=np.array([]), nu=5, chi=0.8, mu=0.04, theta_GA=25, theta_del=20,
@@ -1138,6 +1155,7 @@ class eLCS(BaseEstimator, ClassifierMixin):
         self.hasTrained = True
         return self
 
+    # One learning step on one training instance: match -> correct set -> update -> (subsumption) -> GA -> deletion.
     def runIteration(self, state_phenotype, exploreIter):
         self.population.makeMatchSet(state_phenotype, exploreIter, self)      # form [M] (+ covering)
         self.population.makeCorrectSet(self, state_phenotype[1])              # form [C]
@@ -1148,6 +1166,7 @@ class eLCS(BaseEstimator, ClassifierMixin):
         self.population.deletion(self, exploreIter)
         self.population.clearSets()
 
+    # Predict each row from the rules that match it (pure Python, so slow on many rows).
     def predict(self, X):
         X = np.asarray(X, dtype=float)
         preds = []
